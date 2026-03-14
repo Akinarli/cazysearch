@@ -9,7 +9,7 @@ import requests, re, os, time, hashlib, json
 from bs4 import BeautifulSoup
 
 app = Flask(__name__)
-CORS(app, origins=["*"])
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=False)
 
 HEADERS = {
     "User-Agent": "CAZySearch/1.0 (research tool)",
