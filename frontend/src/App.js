@@ -74,9 +74,10 @@ function ProteinRow({ protein, isLast }) {
   );
   const [goOpen, setGoOpen] = useState({ function: false, process: false, component: false });
 
+  // NCBI'dan gerçek isim geldiyse onu göster, henüz yükleniyorsa bekle göstergesi
   const displayName = protein.product
     ? (protein.organism ? `${protein.product} [${protein.organism}]` : protein.product)
-    : protein.cazy_name || protein.accession;
+    : null;  // null = henüz gelmedi, aşağıda spinner gösterilecek
 
   return (
     <div>
@@ -93,10 +94,9 @@ function ProteinRow({ protein, isLast }) {
         onMouseLeave={e => { if (!open) e.currentTarget.style.background = ""; }}
       >
         <span style={{ flex: 1, fontSize: 13, color: "var(--color-text-primary)" }}>
-          {displayName}
-          {protein.loading && (
-            <span style={{ marginLeft: 8, fontSize: 11, color: "var(--color-text-tertiary)", fontStyle: "italic" }}>
-              yükleniyor…
+          {displayName ?? (
+            <span style={{ color: "var(--color-text-tertiary)", fontStyle: "italic" }}>
+              ⏳ {protein.cazy_name || protein.accession}
             </span>
           )}
         </span>
@@ -445,11 +445,8 @@ export default function App() {
         <>
           <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
             <b>{results.count}</b> organizma bulundu
-            {results.count > 50 && (
-              <span style={{ marginLeft: 8, color: "var(--color-text-tertiary)" }}>(ilk 50 gösteriliyor)</span>
-            )}
           </div>
-          {results.results.slice(0, 50).map(org => (
+          {results.results.map(org => (
             <OrganismCard key={org.id} org={org} />
           ))}
           {results.count === 0 && (
