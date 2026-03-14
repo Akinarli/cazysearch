@@ -175,6 +175,74 @@ def search():
     del soup, html
     return jsonify({"query": q, "count": len(results), "results": results})
 
+def _get_all_proteins(org_id):
+    """
+    CAZy organizmasının TÜM proteinlerini çek.
+    Önce _all.html dene (pagination olmadan tümü), olmadıysa normal sayfaya dön.
+    Pagination varsa debut_PRINC ile tüm sayfaları dolas.
+    """
+    seen = set()
+    proteins = []
+
+    def parse_table(soup):
+        # "Protein Name" + "Family" başlıklı tabloyu bul
+        for table in soup.find_all("table"):
+            rows = table.find_all("tr")
+            if not rows:
+                continue
+            header_cells = [c.get_text(strip=True).lower() for c in rows[0].find_all(["th", "td"])]
+            if not (any("protein" in h for h in header_cells) and any("family" in h for h in header_cells)):
+                continue
+            for row in rows[1:]:
+                cells = row.find_all("td")
+                if len(cells) < 3:
+                    continue
+                name      = cells[0].get_text(strip=True)
+                family    = cells[1].get_text(strip=True)
+                acc_link  = cells[2].find("a")
+                accession = acc_link.get_text(strip=True) if acc_link else cells[2].get_text(strip=True)
+                if name and family and accession and accession not in seen:
+                    seen.add(accession)
+                    proteins.append({"name": name, "family": family, "accession": accession})
+            break  # tek protein tablosu, bulduktan sonra çık
+
+    # 1. Önce _all.html dene — CAZy bazen tüm proteinleri burada verir
+    all_html = fetch_url(f"https://www.cazy.org/b{org_id}_all.html")
+    if all_html and "List Of Proteins" in all_html:
+        soup = BeautifulSoup(all_html, "html.parser")
+        parse_table(soup)
+        del soup, all_html
+        if proteins:
+            return proteins
+
+    # 2. Normal sayfa + pagination
+    offset = 0
+    step   = 100  # CAZy genellikle 100'er satır gösterir
+    while True:
+        if offset == 0:
+            url = f"https://www.cazy.org/b{org_id}.html"
+        else:
+            url = f"https://www.cazy.org/b{org_id}.html?debut_PRINC={offset}#pagination_PRINC"
+        html = fetch_url(url)
+        if not html:
+            break
+        soup = BeautifulSoup(html, "html.parser")
+        before = len(proteins)
+        parse_table(soup)
+        after = len(proteins)
+        del soup, html
+
+        # Hiç yeni protein gelmediyse veya "next page" yoksa dur
+        if after == before:
+            break
+        # Eğer bu sayfada 100'den az YENİ protein geldiyse son sayfadayız
+        if (after - before) < step:
+            break
+        offset += step
+
+    return proteins
+
+
 @app.route("/organism/<org_id>")
 def organism(org_id):
     if not re.match(r"^\d+$", org_id):
@@ -185,21 +253,7 @@ def organism(org_id):
     soup = BeautifulSoup(html, "html.parser")
     title    = soup.find("h2") or soup.find("h1")
     org_name = title.get_text(strip=True) if title else f"Organism {org_id}"
-    proteins = []
-    list_header = soup.find(string=re.compile("List Of Proteins", re.I))
-    if list_header:
-        table = list_header.find_parent("table")
-        if table:
-            for row in table.find_all("tr")[1:]:
-                cells = row.find_all("td")
-                if len(cells) < 3:
-                    continue
-                name      = cells[0].get_text(strip=True)
-                family    = cells[1].get_text(strip=True)
-                acc_link  = cells[2].find("a")
-                accession = acc_link.get_text(strip=True) if acc_link else cells[2].get_text(strip=True)
-                if name and family and accession:
-                    proteins.append({"name": name, "family": family, "accession": accession})
+    proteins = _get_all_proteins(org_id)
     family_summary = {}
     for table in soup.find_all("table"):
         header = table.find("td")
@@ -255,24 +309,11 @@ def scan(org_id):
             return
 
         soup     = BeautifulSoup(html, "html.parser")
-        proteins = []
-        list_header = soup.find(string=re.compile("List Of Proteins", re.I))
-        if list_header:
-            table = list_header.find_parent("table")
-            if table:
-                for row in table.find_all("tr")[1:]:
-                    cells = row.find_all("td")
-                    if len(cells) < 3:
-                        continue
-                    name      = cells[0].get_text(strip=True)
-                    family    = cells[1].get_text(strip=True)
-                    acc_link  = cells[2].find("a")
-                    accession = (acc_link.get_text(strip=True)
-                                 if acc_link else cells[2].get_text(strip=True))
-                    if name and family and accession:
-                        proteins.append({"name": name, "family": family,
-                                         "accession": accession})
+        title    = soup.find("h2") or soup.find("h1")
         del soup, html  # RAM'den düşür
+
+        # Tüm proteinleri al (pagination + _all.html destekli)
+        proteins = _get_all_proteins(org_id)
 
         total = len(proteins)
         # Toplam bilgisini önce gönder
