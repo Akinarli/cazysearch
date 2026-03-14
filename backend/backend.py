@@ -171,7 +171,7 @@ def search():
             m = re.search(r"/b(\d+)\.html", a["href"])
             if m:
                 results.append({"id": m.group(1), "name": name,
-                                 "url": "https://www.cazy.org" + a["href"]})
+                                 "url": a["href"] if a["href"].startswith("http") else "https://www.cazy.org" + a["href"]})
     del soup, html
     return jsonify({"query": q, "count": len(results), "results": results})
 
