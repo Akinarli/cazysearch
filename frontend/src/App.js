@@ -144,6 +144,7 @@ function OrganismCard({ org }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [activeProtein, setActiveProtein] = useState(null);
+  const [proteinNames, setProteinNames] = useState({});
 
   function toggleOpen() {
     if (!open && !detail) {
@@ -154,6 +155,26 @@ function OrganismCard({ org }) {
         .catch(() => setLoading(false));
     }
     setOpen(p => !p);
+  }
+
+  function handleProteinClick(accession) {
+    if (activeProtein === accession) {
+      setActiveProtein(null);
+      return;
+    }
+    setActiveProtein(accession);
+    // Eğer isim henüz yoksa NCBI'dan çek
+    if (!proteinNames[accession]) {
+      fetch(`${API}/protein/${accession}`)
+        .then(r => r.json())
+        .then(d => {
+          if (d.product) {
+            const displayName = d.organism ? `${d.product} [${d.organism}]` : d.product;
+            setProteinNames(prev => ({ ...prev, [accession]: displayName }));
+          }
+        })
+        .catch(() => {});
+    }
   }
 
   // Proteinleri family type'a göre grupla
@@ -224,7 +245,7 @@ function OrganismCard({ org }) {
                       {groups[type].map((p, i) => (
                         <div key={i}>
                           <div
-                            onClick={() => setActiveProtein(activeProtein === p.accession ? null : p.accession)}
+                            onClick={() => handleProteinClick(p.accession)}
                             style={{
                               display: "flex", alignItems: "center", gap: 10,
                               padding: "8px 12px", cursor: "pointer",
@@ -232,9 +253,11 @@ function OrganismCard({ org }) {
                               background: activeProtein === p.accession ? "var(--color-background-secondary)" : "",
                             }}
                           >
-                            <span style={{ flex: 1, fontSize: 13, color: "var(--color-text-primary)" }}>{p.name}</span>
+                            <span style={{ flex: 1, fontSize: 13, color: "var(--color-text-primary)" }}>
+                              {proteinNames[p.accession] || p.name}
+                            </span>
                             <FamilyBadge family={p.family} />
-                            <span style={{ fontSize: 12, color: "#185FA5", minWidth: 90, textAlign: "right" }}>{p.accession}</span>
+                            <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", minWidth: 90, textAlign: "right" }}>{p.accession}</span>
                             <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", transform: activeProtein === p.accession ? "rotate(180deg)" : "none", display: "inline-block" }}>▼</span>
                           </div>
                           {activeProtein === p.accession && (
