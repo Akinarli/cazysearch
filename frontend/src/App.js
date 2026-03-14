@@ -86,24 +86,25 @@ function ProteinPanel({ accession, onClose }) {
       {data && !data.error && (
         <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-primary)" }}>{data.product || accession}</div>
-              {data.organism && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{data.organism}</div>}
+            <div style={{ flex: 1, marginRight: 8 }}>
+              <div style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-primary)", lineHeight: 1.4 }}>
+                {data.product
+                  ? `${data.product}${data.organism ? ` [${data.organism}]` : ""}`
+                  : accession}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, marginTop: 4, color: "var(--color-text-secondary)" }}>
+                {data.gene      && <span><b>Gene:</b> {data.gene}</span>}
+                {data.locus_tag && <span><b>Locus:</b> {data.locus_tag}</span>}
+                {data.ec_number && <span><b>EC:</b> {data.ec_number}</span>}
+                {data.length    && <span><b>Uzunluk:</b> {data.length}</span>}
+                <a href={data.ncbi_url} target="_blank" rel="noreferrer"
+                  style={{ color: "#185FA5", textDecoration: "none" }}>
+                  NCBI linki ↗
+                </a>
+              </div>
             </div>
-            <button onClick={onClose} style={{ fontSize: 12, padding: "2px 8px", cursor: "pointer" }}>✕</button>
+            <button onClick={onClose} style={{ fontSize: 12, padding: "2px 8px", cursor: "pointer", flexShrink: 0 }}>✕</button>
           </div>
-
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 12, marginBottom: 8, color: "var(--color-text-secondary)" }}>
-            {data.gene      && <span><b>Gene:</b> {data.gene}</span>}
-            {data.locus_tag && <span><b>Locus:</b> {data.locus_tag}</span>}
-            {data.ec_number && <span><b>EC:</b> {data.ec_number}</span>}
-            {data.length    && <span><b>Uzunluk:</b> {data.length}</span>}
-          </div>
-
-          <a href={data.ncbi_url} target="_blank" rel="noreferrer"
-            style={{ fontSize: 12, color: "#185FA5", display: "block", marginBottom: 10 }}>
-            NCBI'da görüntüle → {accession}
-          </a>
 
           {/* GO bölümleri */}
           {[
