@@ -293,6 +293,30 @@ def index():
 def health():
     return jsonify({"status": "ok", "app": "CAZySearch"})
 
+@app.route("/debug/<org_id>")
+def debug(org_id):
+    html = fetch_url(f"https://www.cazy.org/b{org_id}.html")
+    if not html:
+        return jsonify({"error": "fetch failed"})
+    soup = BeautifulSoup(html, "html.parser")
+    tables = []
+    for i, t in enumerate(soup.find_all("table")):
+        rows = t.find_all("tr")
+        tables.append({
+            "i": i,
+            "rows": len(rows),
+            "r0": [c.get_text(strip=True) for c in rows[0].find_all(["th","td"])] if rows else [],
+            "r1": [c.get_text(strip=True) for c in rows[1].find_all(["th","td"])] if len(rows)>1 else [],
+            "r2": [c.get_text(strip=True) for c in rows[2].find_all(["th","td"])] if len(rows)>2 else [],
+        })
+    snippet = ""
+    if "List Of Proteins" in html:
+        idx = html.find("List Of Proteins")
+        snippet = html[max(0,idx-300):idx+800]
+    else:
+        snippet = "List Of Proteins NOT FOUND in HTML"
+    return jsonify({"table_count": len(tables), "tables": tables, "snippet": snippet})
+
 @app.route("/search")
 def search():
     q = request.args.get("q", "").strip()
