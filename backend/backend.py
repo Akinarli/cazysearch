@@ -263,6 +263,16 @@ def index():
 def health():
     return jsonify({"status": "ok", "app": "CAZySearch"})
 
+@app.route("/clearcache")
+def clearcache():
+    import shutil
+    try:
+        shutil.rmtree(CACHE_DIR)
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        return jsonify({"status": "ok", "msg": "cache temizlendi"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
 @app.route("/debug/<org_id>")
 def debug(org_id):
     html = fetch_url(f"https://www.cazy.org/b{org_id}.html")
