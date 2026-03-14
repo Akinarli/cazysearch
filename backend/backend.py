@@ -56,83 +56,60 @@ def fetch_url(url, timeout=30):
 # şeklinde bir tablo var. Header bazen <th>, bazen <td class="col_header"> oluyor.
 
 def _parse_proteins_from_soup(soup, seen=None):
-    """soup'tan protein listesini çıkarır. seen: duplicate önleme seti."""
+    """
+    CAZy HTML'i bozuk — tüm protein satırları tek bir <tr> içinde geliyor.
+    Tüm <td class="tdlistprot"> ve <td class="tdlistprotLR"> hücrelerini al,
+    3'er 3'er oku: [name, family, accession, name, family, accession, ...]
+    """
     if seen is None:
         seen = set()
     proteins = []
 
-    # Yöntem 1: "List Of Proteins" yazısını içeren element'i bul
-    # CAZy'de bu genellikle bir <span> veya <b> içinde geçiyor
-    for tag in soup.find_all(["span", "b", "h3", "h2", "div", "td"]):
-        txt = tag.get_text(strip=True)
-        if "List Of Proteins" in txt or "list of proteins" in txt.lower():
-            # Bu tag'in parent table'ını veya sonraki tabloyu bul
-            parent_table = tag.find_parent("table")
-            if parent_table:
-                _extract_from_table(parent_table, proteins, seen)
-                if proteins:
-                    return proteins
-            # Sonraki kardeş table
-            nxt = tag.find_next("table")
-            if nxt:
-                _extract_from_table(nxt, proteins, seen)
-                if proteins:
-                    return proteins
-
-    # Yöntem 2: Tüm tablolara bak, "Protein Name" + "Family" başlıklı olanı al
+    # "List Of Proteins" tablosunu bul — th class="titre_listprot" ile
+    target_table = None
     for table in soup.find_all("table"):
-        rows = table.find_all("tr")
-        if len(rows) < 2:
-            continue
-        header_text = " ".join(c.get_text(strip=True).lower()
-                               for c in rows[0].find_all(["th", "td"]))
-        if "protein" in header_text and "family" in header_text:
-            _extract_from_table(table, proteins, seen)
-            if proteins:
-                return proteins
+        if table.find("th", class_="titre_listprot") or \
+           table.find("th", class_="thlistprot"):
+            target_table = table
+            break
+        # fallback: ilk hücre "List Of Proteins" içeriyorsa
+        first_th = table.find("th")
+        if first_th and "List Of Proteins" in first_th.get_text():
+            target_table = table
+            break
 
-    # Yöntem 3: Accession linklerini tara (APE, WP_, CAA vb. formatları)
-    acc_pattern = re.compile(r"^[A-Z]{2,3}\d{5,}\.\d$|^WP_\d+\.\d$|^[A-Z]{1,3}\d+\.\d$")
-    for a in soup.find_all("a"):
-        href = a.get("href", "")
-        acc  = a.get_text(strip=True)
-        if not acc_pattern.match(acc):
+    if not target_table:
+        return proteins
+
+    # Tablodaki tüm td'leri al (class fark etmeksizin)
+    # Sıralama: name, family, accession, name, family, accession ...
+    all_tds = target_table.find_all("td")
+    cells = [td.get_text(strip=True) for td in all_tds]
+
+    # 3'er 3'er oku, header td'lerini atla (Protein Name, Family, Reference Accession)
+    i = 0
+    # "Protein Name" başlığını geç
+    while i < len(cells) and cells[i] in ("Protein Name", "Family", "Reference Accession", ""):
+        i += 1
+
+    while i + 2 < len(cells):
+        name      = cells[i].strip()
+        family    = cells[i+1].strip()
+        accession = cells[i+2].strip()
+        i += 3
+
+        if not name or not family or not accession:
             continue
-        if acc in seen:
+        if accession in seen:
             continue
-        # Aynı satırdaki hücreleri al
-        row = a.find_parent("tr")
-        if not row:
+        # Geçerli accession formatı: APE30045.1, WP_123456.1 vb.
+        if not re.match(r"^[A-Z][A-Z0-9_]+\.\d+$", accession):
             continue
-        cells = row.find_all("td")
-        if len(cells) < 3:
-            continue
-        name   = cells[0].get_text(strip=True)
-        family = cells[1].get_text(strip=True)
-        if name and family:
-            seen.add(acc)
-            proteins.append({"name": name, "family": family, "accession": acc})
+
+        seen.add(accession)
+        proteins.append({"name": name, "family": family, "accession": accession})
 
     return proteins
-
-
-def _extract_from_table(table, proteins, seen):
-    """Table'dan protein satırlarını çıkarır."""
-    rows = table.find_all("tr")
-    for row in rows[1:]:  # header'ı atla
-        cells = row.find_all("td")
-        if len(cells) < 3:
-            continue
-        name      = cells[0].get_text(strip=True)
-        family    = cells[1].get_text(strip=True)
-        acc_link  = cells[2].find("a")
-        accession = acc_link.get_text(strip=True) if acc_link else cells[2].get_text(strip=True)
-        accession = accession.strip()
-        if name and family and accession and accession not in seen:
-            # Geçersiz accession'ları filtrele
-            if re.match(r"^[A-Z0-9_.]+$", accession) and len(accession) > 3:
-                seen.add(accession)
-                proteins.append({"name": name, "family": family, "accession": accession})
 
 
 def _get_all_proteins(org_id):
@@ -169,15 +146,8 @@ def _get_all_proteins(org_id):
 
         soup   = BeautifulSoup(html, "html.parser")
         before = len(proteins)
-        _parse_proteins_from_soup(soup, seen)
-        # seen/proteins güncel — parse içinde eklendi
-        # ama parse ayrı liste döndürüyor, burada topluyoruz
-        new_batch = _parse_proteins_from_soup(BeautifulSoup(html, "html.parser"), set(seen))
-        # Tekrara düşmemek için seen kontrolü
-        for p in new_batch:
-            if p["accession"] not in seen:
-                seen.add(p["accession"])
-                proteins.append(p)
+        new_batch = _parse_proteins_from_soup(soup, seen)
+        proteins.extend(new_batch)
         after = len(proteins)
         del soup, html
 
