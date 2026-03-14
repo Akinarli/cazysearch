@@ -32,18 +32,22 @@ def cache_set(key, data):
     except Exception:
         pass
 
-def fetch_url(url):
+def fetch_url(url, timeout=30):
     cached = cache_get(url)
     if cached:
         return cached
     try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
         r.raise_for_status()
         cache_set(url, r.text)
         return r.text
     except Exception as e:
         print(f"[WARN] {url}: {e}")
         return None
+
+@app.route("/")
+def index():
+    return jsonify({"status": "ok", "app": "CAZySearch"})
 
 @app.route("/health")
 def health():
@@ -117,10 +121,33 @@ def organism(org_id):
 def protein_detail(accession):
     if not re.match(r"^[A-Z0-9_.]+$", accession):
         return jsonify({"error": "Gecersiz accession"}), 400
-    result = {"accession": accession, "ncbi_url": f"https://www.ncbi.nlm.nih.gov/protein/{accession}", "product": "", "organism": "", "gene": "", "locus_tag": "", "ec_number": "", "go_function": [], "go_process": [], "go_component": [], "length": ""}
-    text = fetch_url(f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=protein&id={accession}&rettype=gp&retmode=text")
-    if not text:
+
+    result = {
+        "accession": accession,
+        "ncbi_url": f"https://www.ncbi.nlm.nih.gov/protein/{accession}",
+        "product": "",
+        "organism": "",
+        "gene": "",
+        "locus_tag": "",
+        "ec_number": "",
+        "go_function": [],
+        "go_process": [],
+        "go_component": [],
+        "length": ""
+    }
+
+    ncbi_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=protein&id={accession}&rettype=gp&retmode=text"
+    text = None
+    for attempt in range(2):
+        text = fetch_url(ncbi_url, timeout=45)
+        if text and len(text) > 100:
+            break
+        time.sleep(1)
+
+    if not text or len(text) < 100:
+        print(f"[WARN] NCBI data not available for {accession}")
         return jsonify(result)
+
     m = re.search(r"DEFINITION\s+(.+?)(?=\nACCESSION|\nVERSION)", text, re.DOTALL)
     if m:
         product = re.sub(r"\s+", " ", m.group(1)).strip()
@@ -130,13 +157,30 @@ def protein_detail(accession):
             result["product"] = product[:bracket.start()].strip().rstrip(".")
         else:
             result["product"] = product
+
+    if not result["product"]:
+        m = re.search(r'/product="([^"]+)"', text)
+        if m:
+            result["product"] = m.group(1)
+
+    if not result["organism"]:
+        m = re.search(r'/organism="([^"]+)"', text)
+        if m:
+            result["organism"] = m.group(1)
+
     m = re.search(r"LOCUS\s+\S+\s+(\d+)\s+aa", text)
     if m:
         result["length"] = m.group(1) + " aa"
-    for pat, key in [(r'/gene="([^"]+)"', "gene"), (r'/locus_tag="([^"]+)"', "locus_tag"), (r'/EC_number="([^"]+)"', "ec_number")]:
+
+    for pat, key in [
+        (r'/gene="([^"]+)"', "gene"),
+        (r'/locus_tag="([^"]+)"', "locus_tag"),
+        (r'/EC_number="([^"]+)"', "ec_number")
+    ]:
         m = re.search(pat, text)
         if m:
             result[key] = m.group(1)
+
     def parse_go(txt, field):
         entries = []
         for m in re.finditer('/' + field + '="(.*?)"', txt, re.DOTALL):
@@ -147,6 +191,7 @@ def protein_detail(accession):
             else:
                 entries.append({"go_id": "", "description": val, "evidence": ""})
         return entries
+
     result["go_function"] = parse_go(text, "GO_function")
     result["go_process"] = parse_go(text, "GO_process")
     result["go_component"] = parse_go(text, "GO_component")
