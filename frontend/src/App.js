@@ -64,20 +64,23 @@ function GoItem({ item }) {
   );
 }
 
-// ── Protein satır kartı ──────────────────────────────────────────────────────
+// ── Tek protein satırı ───────────────────────────────────────────────────────
 function ProteinRow({ protein, isLast }) {
   const [open, setOpen] = useState(false);
+  const [goOpen, setGoOpen] = useState({ function: false, process: false, component: false });
+
   const hasGo = (
     (protein.go_function?.length  > 0) ||
     (protein.go_process?.length   > 0) ||
     (protein.go_component?.length > 0)
   );
-  const [goOpen, setGoOpen] = useState({ function: false, process: false, component: false });
 
-  // NCBI'dan gerçek isim geldiyse onu göster, henüz yükleniyorsa bekle göstergesi
-  const displayName = protein.product
-    ? (protein.organism ? `${protein.product} [${protein.organism}]` : protein.product)
-    : null;  // null = henüz gelmedi, aşağıda spinner gösterilecek
+  // Gerçek NCBI ismi geldiyse göster, gelmemişse locus tag + spinner
+  const displayName = protein.ncbi_loaded
+    ? (protein.product
+        ? (protein.organism ? `${protein.product} [${protein.organism}]` : protein.product)
+        : protein.cazy_name)
+    : null;
 
   return (
     <div>
@@ -96,7 +99,7 @@ function ProteinRow({ protein, isLast }) {
         <span style={{ flex: 1, fontSize: 13, color: "var(--color-text-primary)" }}>
           {displayName ?? (
             <span style={{ color: "var(--color-text-tertiary)", fontStyle: "italic" }}>
-              ⏳ {protein.cazy_name || protein.accession}
+              ⏳ {protein.cazy_name}
             </span>
           )}
         </span>
@@ -117,7 +120,7 @@ function ProteinRow({ protein, isLast }) {
           padding: "10px 16px 12px",
           background: "var(--color-background-secondary)",
         }}>
-          {protein.loading ? (
+          {!protein.ncbi_loaded ? (
             <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>NCBI'dan yükleniyor…</div>
           ) : (
             <>
@@ -172,85 +175,72 @@ function ProteinRow({ protein, isLast }) {
   );
 }
 
-// ── Organizma kartı — SSE ile tarar ─────────────────────────────────────────
+// ── Organizma kartı — REST polling ile sıralı NCBI çekimi ───────────────────
 function OrganismCard({ org }) {
   const [open,     setOpen]     = useState(false);
-  const [proteins, setProteins] = useState([]);   // { accession, family, cazy_name, loading, ...ncbi }
+  const [proteins, setProteins] = useState(null);   // null=henüz yüklenme başlamadı
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [orgName,  setOrgName]  = useState(org.name);
-  const esRef = useRef(null);
+  const cancelRef = useRef(false);
 
-  // Kart açılınca SSE başlat
-  function handleOpen() {
-    if (open) { setOpen(false); return; }
-    setOpen(true);
-    if (proteins.length > 0) return;  // zaten tarandı
-
+  async function startScan(proteinList) {
+    cancelRef.current = false;
     setScanning(true);
-    setProteins([]);
-    setProgress({ done: 0, total: 0 });
+    setProgress({ done: 0, total: proteinList.length });
 
-    const es = new EventSource(`${API}/scan/${org.id}`);
-    esRef.current = es;
+    for (let i = 0; i < proteinList.length; i++) {
+      if (cancelRef.current) break;
 
-    es.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-
-      if (msg.error) {
-        setScanning(false);
-        es.close();
-        return;
+      const p = proteinList[i];
+      try {
+        const r = await fetch(`${API}/protein/${p.accession}`);
+        const ncbi = await r.json();
+        setProteins(prev => prev.map(x =>
+          x.accession === p.accession
+            ? { ...x, ...ncbi, ncbi_loaded: true }
+            : x
+        ));
+      } catch (_) {
+        // NCBI başarısız olsa bile devam et
+        setProteins(prev => prev.map(x =>
+          x.accession === p.accession ? { ...x, ncbi_loaded: true } : x
+        ));
       }
-
-      // İlk meta mesajı
-      if (msg.started) {
-        setProgress({ done: 0, total: msg.total });
-        return;
-      }
-
-      // Bitti
-      if (msg.done) {
-        setScanning(false);
-        setProgress(p => ({ ...p, done: p.total }));
-        es.close();
-        return;
-      }
-
-      // Normal protein verisi
-      setProgress(p => ({ done: (msg.index ?? p.done) + 1, total: msg.total ?? p.total }));
-      setProteins(prev => {
-        // accession zaten varsa güncelle (loading placeholder → gerçek veri)
-        const idx = prev.findIndex(p => p.accession === msg.accession);
-        const entry = { ...msg, loading: false };
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = entry;
-          return next;
-        }
-        return [...prev, entry];
-      });
-    };
-
-    es.onerror = () => {
-      setScanning(false);
-      es.close();
-    };
+      setProgress({ done: i + 1, total: proteinList.length });
+    }
+    setScanning(false);
   }
 
-  // Kart kapanınca SSE kapat
-  useEffect(() => {
-    if (!open && esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
+  async function handleOpen() {
+    if (open) {
+      setOpen(false);
+      cancelRef.current = true;  // taramayı durdur
+      return;
     }
-  }, [open]);
+    setOpen(true);
+    if (proteins !== null) return;  // zaten yüklendi
+
+    // 1. CAZy'den protein listesini çek
+    try {
+      const r = await fetch(`${API}/organism/${org.id}`);
+      const d = await r.json();
+      const list = (d.proteins || []).map(p => ({ ...p, ncbi_loaded: false }));
+      setProteins(list);
+      // 2. Sırayla NCBI'dan isim çek
+      startScan(list);
+    } catch (e) {
+      setProteins([]);
+      setScanning(false);
+    }
+  }
+
+  // Kart unmount olunca iptal et
+  useEffect(() => () => { cancelRef.current = true; }, []);
 
   // Family'ye göre grupla
   const groups = {};
-  proteins.forEach(p => {
-    const fams = p.family.split(",").map(f => f.trim());
-    const type = getFamilyType(fams[0]);
+  (proteins || []).forEach(p => {
+    const type = getFamilyType(p.family.split(",")[0].trim());
     if (!groups[type]) groups[type] = [];
     groups[type].push(p);
   });
@@ -272,12 +262,12 @@ function OrganismCard({ org }) {
       >
         <div>
           <div style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-primary)" }}>
-            {orgName}
+            {org.name}
           </div>
           <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 2 }}>
             {scanning
-              ? `${progress.done} / ${progress.total || "?"} protein tarandı…`
-              : proteins.length > 0
+              ? `${progress.done} / ${progress.total} protein tarandı…`
+              : proteins !== null
                 ? `${proteins.length} protein`
                 : "Detay için tıkla"}
           </div>
@@ -293,7 +283,7 @@ function OrganismCard({ org }) {
                 height: "100%", borderRadius: 2, background: "#185FA5",
                 width: progress.total
                   ? `${Math.round((progress.done / progress.total) * 100)}%`
-                  : "10%",
+                  : "5%",
                 transition: "width 0.3s",
               }} />
             </div>
@@ -315,6 +305,18 @@ function OrganismCard({ org }) {
               CAZy'de görüntüle →
             </a>
           </div>
+
+          {proteins === null && (
+            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "8px 0" }}>
+              Yükleniyor…
+            </div>
+          )}
+
+          {proteins !== null && proteins.length === 0 && (
+            <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", fontStyle: "italic" }}>
+              Protein bulunamadı.
+            </div>
+          )}
 
           {familyOrder.map(type => {
             if (!groups[type]?.length) return null;
@@ -341,12 +343,6 @@ function OrganismCard({ org }) {
               </div>
             );
           })}
-
-          {scanning && proteins.length === 0 && (
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "8px 0" }}>
-              Proteinler yükleniyor…
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -378,7 +374,6 @@ export default function App() {
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "2rem 1rem", fontFamily: "var(--font-sans, system-ui)" }}>
 
-      {/* Header */}
       <div style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
           <h1 style={{ fontSize: 26, fontWeight: 600, margin: 0, letterSpacing: -0.5 }}>
@@ -394,7 +389,6 @@ export default function App() {
         </p>
       </div>
 
-      {/* Arama kutusu */}
       <div style={{ display: "flex", gap: 8, marginBottom: "1.5rem" }}>
         <input
           type="text"
@@ -417,7 +411,6 @@ export default function App() {
         </button>
       </div>
 
-      {/* Hint chips */}
       {!results && !loading && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: "2rem" }}>
           {["Halomonas", "Bacillus", "Pseudomonas", "Streptomyces", "Clostridium", "Lactobacillus"].map(s => (
@@ -432,7 +425,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Hata */}
       {error && (
         <div style={{ background: "var(--color-background-danger)", color: "var(--color-text-danger)",
           borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>
@@ -440,7 +432,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Sonuçlar */}
       {results && (
         <>
           <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
